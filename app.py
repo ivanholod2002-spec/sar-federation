@@ -16,203 +16,177 @@ from extractor import extract_rules
 from pypdf import PdfReader
 import io
 
+# --- НАСТРОЙКА СТРАНИЦЫ ---
+st.set_page_config(page_title="САР-ФЕДЕРАЦИЯ | Neuro-Symbolic AI", page_icon="🧠", layout="wide")
+
+# Кастомный CSS для красоты
+st.markdown("""
+<style>
+    .main { background-color: #0E1117; color: #FAFAFA; }
+    .stMetric { background-color: #1E2129; padding: 15px; border-radius: 10px; border: 1px solid #333; }
+    .stChatMessage { border-radius: 15px; padding: 10px; }
+    .verdict-yes { color: #00FFAA; font-weight: bold; font-size: 20px; }
+    .verdict-no { color: #FF5555; font-weight: bold; font-size: 20px; }
+</style>
+""", unsafe_allow_html=True)
+
 load_dotenv()
 api_key = st.secrets.get("API_KEY", os.getenv("API_KEY"))
 api_base = st.secrets.get("API_BASE", os.getenv("API_BASE"))
-
 client = OpenAI(api_key=api_key, base_url=api_base)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
-st.set_page_config(page_title="САР-ФЕДЕРАЦИЯ", layout="wide")
-st.title("🧠 САР-ФЕДЕРАЦИЯ: Медицина + Право")
+st.title("🧠 САР-ФЕДЕРАЦИЯ: Neuro-Symbolic Engine")
+st.caption("Аудируемый ИИ с математической верификацией Z3")
 
-domain = st.radio(
-    "Выберите домен (Federation Layer):",
-    options=["medicine", "law", "federation"],
-    format_func=lambda x: "🏥 Медицина" if x == "medicine" else ("⚖️ Право" if x == "law" else "🔗 Федерация (Кросс-домен)"),
-    horizontal=True
-)
-
-collection_med = chroma_client.get_or_create_collection(name="facts")
-collection_law = chroma_client.get_or_create_collection(name="facts_law")
-
+# --- БОКОВАЯ ПАНЕЛЬ ---
 with st.sidebar:
-    st.header("📊 Метрики доверия")
+    st.image("https://cdn-icons-png.flaticon.com/512/2103/2103633.png", width=80)
+    st.header("Панель управления")
+    
+    domain = st.radio(
+        "Домен (Federation Layer):",
+        options=["medicine", "law", "federation"],
+        format_func=lambda x: "🏥 Медицина" if x == "medicine" else ("⚖️ Право" if x == "law" else "🔗 Кросс-домен"),
+        horizontal=False
+    )
+    
+    st.divider()
+    st.subheader("📊 Метрики доверия")
     m = compute_metrics()
     col_a, col_b = st.columns(2)
-    with col_a:
-        st.metric("Запросов", m["total_queries"])
-        st.metric("✅ Доказано", m["verified_true"])
-    with col_b:
-        st.metric("Правил", m["rules_added"])
-        st.metric("❌ Заблок.", m["verified_false"])
-    st.progress(min(m["verification_rate"] / 100, 1.0))
-    st.caption(f"Верификация: {m['verification_rate']}%")
+    col_a.metric("Запросов", m["total_queries"])
+    col_b.metric("Правил", m["rules_added"])
+    col_a.metric("✅ Доказано", m["verified_true"])
+    col_b.metric("❌ Заблок.", m["verified_false"])
+    st.progress(min(m["verification_rate"] / 100, 1.0), text=f"Верификация: {m['verification_rate']}%")
 
     st.divider()
-    st.header("📁 Загрузка документов (M1)")
-    uploaded_file = st.file_uploader("Загрузить документ (TXT или PDF)", type=["txt", "pdf"])
-    
-    if uploaded_file:
-        st.success(f"Файл готов: {uploaded_file.name}")
-        file_extension = uploaded_file.name.split('.')[-1].lower()
-        
-        def read_file_text():
-            uploaded_file.seek(0)
-            if file_extension == "pdf":
-                reader = PdfReader(io.BytesIO(uploaded_file.read()))
-                txt = ""
-                for page in reader.pages:
-                    txt += page.extract_text() or ""
-                return txt
-            else:
+    with st.expander("📁 Загрузить документ (M1/M5)"):
+        uploaded_file = st.file_uploader("TXT или PDF", type=["txt", "pdf"])
+        if uploaded_file:
+            file_extension = uploaded_file.name.split('.')[-1].lower()
+            def read_file_text():
+                uploaded_file.seek(0)
+                if file_extension == "pdf":
+                    reader = PdfReader(io.BytesIO(uploaded_file.read()))
+                    return "".join([page.extract_text() or "" for page in reader.pages])
                 return uploaded_file.read().decode("utf-8")
-                
-        if st.button("1. Проглотить документ (RAG)"):
-            progress_bar = st.progress(0, text="Читаю файл...")
-            text = read_file_text()
-            chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
             
-            target_cols = [collection_med, collection_law] if domain == "federation" else ([collection_law] if domain == "law" else [collection_med])
-            batch_size = 100
-            total_chunks = len(chunks)
+            if st.button("Проглотить (RAG)"):
+                with st.spinner("Векторизация..."):
+                    text = read_file_text()
+                    chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
+                    target_cols = [chroma_client.get_or_create_collection("facts"), chroma_client.get_or_create_collection("facts_law")] if domain == "federation" else ([chroma_client.get_or_create_collection("facts_law")] if domain == "law" else [chroma_client.get_or_create_collection("facts")])
+                    for col in target_cols:
+                        col.add(documents=chunks, metadatas=[{"source": uploaded_file.name}]*len(chunks), ids=[str(uuid.uuid4()) for _ in chunks])
+                    st.success(f"Загружено {len(chunks)} чанков!")
+                    
+            if st.button("Извлечь правила (LLM)"):
+                with st.spinner("Анализ текста..."):
+                    text = read_file_text()
+                    if domain == "federation":
+                        st.session_state['extracted_med'] = extract_rules(text[:3000], "medicine", client)
+                        st.session_state['extracted_law'] = extract_rules(text[:3000], "law", client)
+                        st.success("Правила извлечены (Медицина + Право)!")
+                    else:
+                        st.session_state['extracted_rules'] = extract_rules(text[:3000], domain, client)
+                        st.success("Правила извлечены!")
+
+    with st.expander("🔐 Журнал аудита (L1)"):
+        if st.button("Проверить целостность"):
+            ok, msg = verify_chain()
+            if ok: st.success(msg)
+            else: st.error(msg)
+
+# --- ОСНОВНОЙ ЧАТ ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Отображаем историю
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if "graph" in message:
+            with st.expander("Посмотреть граф связей"):
+                components.html(message["graph"], height=400)
+
+# Поле ввода (как в ChatGPT)
+if prompt := st.chat_input("Задайте медицинский или юридический вопрос..."):
+    
+    # 1. Добавляем вопрос пользователя в историю
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # 2. Логика САР
+    with st.chat_message("assistant"):
+        with st.spinner("Око анализирует..."):
+            log_event("query_received", {"question": prompt, "domain": domain})
             
-            for col in target_cols:
-                for i in range(0, total_chunks, batch_size):
-                    batch = chunks[i:i+batch_size]
-                    ids = [str(uuid.uuid4()) for _ in batch]
-                    metas = [{"source": uploaded_file.name} for _ in batch]
-                    col.add(documents=batch, metadatas=metas, ids=ids)
-                    percent = min((i + batch_size) / total_chunks, 1.0)
-                    progress_bar.progress(percent, text=f"Загрузка в базу: {int(percent*100)}%")
+            # M1: Поиск
+            collection_med = chroma_client.get_or_create_collection("facts")
+            collection_law = chroma_client.get_or_create_collection("facts_law")
             
-            log_event("document_uploaded", {"file": uploaded_file.name, "chunks": total_chunks, "domain": domain})
-            st.success(f"✅ Загружено {total_chunks} фрагментов!")
-                
-        st.divider()
-        st.markdown("🤖 **Авто-извлечение правил (M5)**")
-        if st.button("2. Извлечь правила из текста"):
-            with st.spinner("LLM читает документ..."):
-                text = read_file_text()
-                if domain == "federation":
-                    st.session_state['extracted_med'] = extract_rules(text[:3000], "medicine", client)
-                    st.session_state['extracted_law'] = extract_rules(text[:3000], "law", client)
-                else:
-                    st.session_state['extracted_rules'] = extract_rules(text[:3000], domain, client)
-
-        if domain == "federation":
-            if 'extracted_med' in st.session_state and st.session_state['extracted_med']:
-                st.info(f"Медицинских правил: {len(st.session_state['extracted_med'])}")
-            if 'extracted_law' in st.session_state and st.session_state['extracted_law']:
-                st.info(f"Юридических правил: {len(st.session_state['extracted_law'])}")
-            if st.button("✅ Одобрить ВСЕ правила"):
-                if 'extracted_med' in st.session_state:
-                    rules_m = load_rules("medicine")
-                    for r in st.session_state['extracted_med']:
-                        rules_m["drugs"].setdefault(r.get('entity'), []).append(r.get('effect'))
-                        rules_m["consequences"][r.get('effect')] = r.get('consequence')
-                    with open("rules_db.json", "w", encoding="utf-8") as f: json.dump(rules_m, f, ensure_ascii=False, indent=2)
-                if 'extracted_law' in st.session_state:
-                    rules_l = load_rules("law")
-                    for r in st.session_state['extracted_law']:
-                        rules_l["drugs"].setdefault(r.get('entity'), []).append(r.get('effect'))
-                        rules_l["consequences"][r.get('effect')] = r.get('consequence')
-                    with open("rules_law.json", "w", encoding="utf-8") as f: json.dump(rules_l, f, ensure_ascii=False, indent=2)
-                st.success("✅ Все правила добавлены в онтологии Z3!")
-                del st.session_state['extracted_med']; del st.session_state['extracted_law']
-        else:
-            if 'extracted_rules' in st.session_state and st.session_state['extracted_rules']:
-                st.info(f"Найдено правил: {len(st.session_state['extracted_rules'])}")
-                for r in st.session_state['extracted_rules']: st.caption(f"• {r.get('entity')} ➔ {r.get('effect')} ➔ {r.get('consequence')}")
-                if st.button("✅ Одобрить и добавить в Z3"):
-                    rules_update = load_rules(domain)
-                    for r in st.session_state['extracted_rules']:
-                        rules_update["drugs"].setdefault(r.get('entity'), []).append(r.get('effect'))
-                        rules_update["consequences"][r.get('effect')] = r.get('consequence')
-                    filename = "rules_law.json" if domain == "law" else "rules_db.json"
-                    with open(filename, "w", encoding="utf-8") as f: json.dump(rules_update, f, ensure_ascii=False, indent=2)
-                    st.success("✅ Правила добавлены в Z3!"); del st.session_state['extracted_rules']
-
-    st.divider()
-    st.header("📜 Журнал (L1)")
-    if st.button("🔒 Проверить целостность"):
-        ok, msg = verify_chain()
-        if ok: st.success(msg)
-        else: st.error(msg)
-
-default_question = "Можно ли заставить пациента подписать договор на эксперимент?" if domain == "federation" else ("Можно ли давать ибупрофен при гастрите?" if domain == "medicine" else "Что будет, если договор аренды заключен в устной форме?")
-question = st.text_input("Введите вопрос:", default_question)
-
-if st.button("Запустить анализ"):
-    if question:
-        log_event("query_received", {"question": question, "domain": domain})
-        col1, col2 = st.columns(2)
-        with col1:
-            if domain == "federation":
-                res_med = collection_med.query(query_texts=[question], n_results=1)
-                res_law = collection_law.query(query_texts=[question], n_results=1)
-                facts_med, facts_law = res_med['documents'][0], res_law['documents'][0]
-                
-                st.subheader("1. M1: Кросс-доменный поиск")
-                st.markdown("**Медицина:**"); [st.info(f) for f in facts_med]
-                st.markdown("**Право:**"); [st.info(f) for f in facts_law]
-                
-                rules_med, rules_law = load_rules("medicine"), load_rules("law")
-                prompt = f"""Проанализируй вопрос с двух сторон.
-Медицинские факты: {facts_med}
-Юридические факты: {facts_law}
-Вопрос: {question}
-Верни СТРОГО JSON:
-{{"medical": {{"drug": "...", "effect": "... из {list(rules_med['consequences'].keys())}", "reason": "..."}},
-  "legal": {{"drug": "...", "effect": "... из {list(rules_law['consequences'].keys())}", "reason": "..."}}}}"""
-                
-                response = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
-                raw = response.choices[0].message.content
-                data = json.loads(raw)
-                st.subheader("2. M2: Кросс-доменный JSON"); st.code(raw, language="json")
-                
-                st.subheader("3. M3: Вердикты Z3")
-                med, law = data.get("medical", {}), data.get("legal", {})
-                res_m, msg_m, edges_m = verify_logic(med.get("drug", ""), med.get("effect", ""), "medicine")
-                if res_m is True: st.success(f"🏥 {msg_m}")
-                else: st.error(f"🏥 {msg_m}")
-                res_l, msg_l, edges_l = verify_logic(law.get("drug", ""), law.get("effect", ""), "law")
-                if res_l is True: st.success(f"⚖️ {msg_l}")
-                else: st.error(f"⚖️ {msg_l}")
-                edges = edges_m + edges_l; result = res_m and res_l
-                
+            facts_med = collection_med.query(query_texts=[prompt], n_results=2)['documents'][0]
+            facts_law = collection_law.query(query_texts=[prompt], n_results=2)['documents'][0] if domain == "federation" else []
+            
+            context = "\n".join(facts_med + facts_law)
+            rules = load_rules(domain)
+            allowed_effects = list(rules.get("consequences", {}).keys())
+            
+            # M2: LLM (с учетом истории)
+            history_prompt = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.messages[-3:]])
+            llm_prompt = f"""Ты — нейро-символьный ИИ. 
+Контекст из базы: {context}
+История диалога: {history_prompt}
+Вопрос: {prompt}
+Верни СТРОГО JSON: 
+{{"drug": "название", "effect": "из списка {allowed_effects}", "age": число_или_0, "disease": "болезнь_или_none", "reason": "объяснение"}}"""
+            
+            response = client.chat.completions.create(
+                model="deepseek-chat", 
+                messages=[{"role": "user", "content": llm_prompt}], 
+                response_format={"type": "json_object"}
+            )
+            data = json.loads(response.choices[0].message.content)
+            
+            # M3: Z3 (с возрастом и болезнью)
+            result, msg, edges = verify_logic(
+                drug=data.get("drug", ""), 
+                claimed_effect=data.get("effect", ""), 
+                domain=domain,
+                age=int(data.get("age", 30)),
+                disease=data.get("disease", "none")
+            )
+            
+            # Формируем красивый ответ
+            if result is True:
+                verdict = f"<span class='verdict-yes'>✅ РАЗРЕШЕНО / ДОКАЗАНО</span><br>{msg}<br><br><i>{data.get('reason', '')}</i>"
+            elif result is False:
+                verdict = f"<span class='verdict-no'>❌ ЗАБЛОКИРОВАНО (Противоречие)</span><br>{msg}"
             else:
-                collection = collection_law if domain == "law" else collection_med
-                rules = load_rules(domain)
-                results = collection.query(query_texts=[question], n_results=2)
-                facts, sources = results['documents'][0], results['metadatas'][0]
-                st.subheader(f"1. M1: Поиск [{domain}]")
-                for i in range(len(facts)): st.info(f"**[{sources[i]['source']}]** {facts[i]}")
-                
-                context = "\n".join(facts)
-                allowed_effects = list(rules["consequences"].keys())
-                prompt = f"""Ответь на вопрос: {question}\nФакты: {context}\nВерни СТРОГО JSON: {{"drug": "...", "effect": "... из {allowed_effects}", "can_take": true/false, "reason": "..."}}"""
-                response = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": prompt}], response_format={"type": "json_object"})
-                raw = response.choices[0].message.content; data = json.loads(raw)
-                st.subheader("2. M2: LLM"); st.code(raw, language="json")
-                
-                st.subheader(f"3. M3: Z3 [{domain}]")
-                result, msg, edges = verify_logic(data.get("drug", ""), data.get("effect", ""), domain)
-                if result is True: st.success(f"✅ {msg}")
-                elif result is False: st.error(f"❌ {msg}")
-                else: st.warning(f"⚠️ {msg}")
-                
-            log_event("m3_verified", {"valid": result, "domain": domain})
+                verdict = f"<span style='color: orange;'>⚠️ ТРЕБУЕТСЯ ЭКСПЕРТ</span><br>{msg}"
 
-        with col2:
-            st.subheader("4. Граф Связей")
+            st.markdown(verdict, unsafe_allow_html=True)
+            
+            # Строим граф
+            graph_html = ""
             if edges:
-                net = Network(height="500px", width="100%", bgcolor="#222222", font_color="white", directed=True)
+                net = Network(height="400px", width="100%", bgcolor="#0E1117", font_color="white", directed=True)
                 for edge in edges:
                     net.add_node(edge[0], label=edge[0], color="#00FFAA")
-                    net.add_node(edge[1], label=edge[1], color="#FF5555" if ("Опасно" in edge[1] or "Риск" in edge[1] or "Недействителен" in edge[1]) else "#5555FF")
+                    net.add_node(edge[1], label=edge[1], color="#FF5555" if "Риск" in edge[1] or "Опасн" in edge[1] else "#5555FF")
                     net.add_edge(edge[0], edge[1])
                 net.save_graph("graph.html")
-                with open("graph.html", "r", encoding="utf-8") as f: components.html(f.read(), height=520)
-            else:
-                st.info("Граф не построен.")
+                with open("graph.html", "r", encoding="utf-8") as f:
+                    graph_html = f.read()
+                components.html(graph_html, height=400)
+            
+            # Сохраняем ответ в историю
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": verdict,
+                "graph": graph_html
+            })
+            log_event("m3_verified", {"valid": result, "domain": domain})
