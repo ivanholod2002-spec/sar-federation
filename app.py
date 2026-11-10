@@ -54,12 +54,13 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
+            # Сначала выводим текст рассуждения (как в ChatGPT)
+            st.markdown(msg.get("reasoning", ""))
+            
+            # Затем выводим бейдж верификации Z3 (если есть)
             if msg.get("status") == "success": st.success(msg["content"])
             elif msg.get("status") == "error": st.error(msg["content"])
-            else: st.warning(msg["content"])
-            
-            if "reason" in msg and msg["reason"]:
-                st.info(f"💡 **Обоснование:** {msg['reason']}")
+            elif msg.get("status"): st.warning(msg["content"])
             
             if "graph" in msg and msg["graph"]:
                 with st.expander("🕸️ Посмотреть паутину связей"):
@@ -73,11 +74,10 @@ if prompt := st.chat_input("Задайте вопрос..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Око сканирует паутину..."):
+        with st.spinner("Око размышляет..."):
             collection_med = chroma_client.get_or_create_collection("facts")
             collection_law = chroma_client.get_or_create_collection("facts_law")
             
-            # ВАРИАНТ 1: Гибридный поиск (4 результата вместо 1)
             res_med = collection_med.query(query_texts=[prompt], n_results=4)
             res_law = collection_law.query(query_texts=[prompt], n_results=4) if domain == "federation" else {"documents": [[]], "metadatas": [[]]}
             
@@ -85,24 +85,29 @@ if prompt := st.chat_input("Задайте вопрос..."):
             facts_law, meta_law = res_law['documents'][0], res_law['metadatas'][0]
             
             context = "\n".join(facts_med + facts_law)
-            sources = list(set([m['source'] for m in meta_med + meta_law if m])) # Уникальные источники
+            sources = list(set([m['source'] for m in meta_med + meta_law if m]))
             
             rules = load_rules(domain)
             allowed = list(rules.get("consequences", {}).keys())
             
-            if domain == "law":
-                entity_name, property_name = "действие", "последствие"
-            else:
-                entity_name, property_name = "препарат", "эффект"
-            
-            # ВАРИАНТ 1: Умный промпт для обобщения
-            llm_prompt = f"""Ты — аналитик. Изучи фрагменты текста и ответь на вопрос.
-Если вопрос общий (например, "что такое..."), сделай вывод на основе того, что написано в этих фрагментах.
-Если информации нет, напиши "НЕТ_ДАННЫХ".
-Фрагменты: {context}
+            # НОВЫЙ ПРОМПТ: Сначала думаем, потом проверяем
+            llm_prompt = f"""Ты — экспертный ИИ-ассистент.
+Твоя задача: 1) Дать развернутый и умный ответ на вопрос (поле "reasoning"). 2) Выделить конкретный факт для математической проверки Z3 (поле "verification").
+Если вопрос общий (например, "что такое..."), просто ответь на него, а в поле "entity" напиши "none".
+Если вопрос требует проверки (например, "можно ли давать Х при Y"), выдели сущность и эффект.
+Контекст из базы: {context}
 Вопрос: {prompt}
-Верни СТРОГО JSON: 
-{{"{entity_name}": "название/термин или НЕТ_ДАННЫХ", "{property_name}": "из списка {allowed}", "age": 0, "disease": "none", "reason": "объяснение"}}"""
+Верни СТРОГО JSON:
+{{
+  "reasoning": "Твой подробный ответ на вопрос (2-3 абзаца). Опирайся на свои знания и контекст.",
+  "verification": {{
+    "entity": "название или none",
+    "effect": "из списка {allowed}",
+    "age": 0,
+    "disease": "none",
+    "reason": "почему Z3 это подтвердит"
+  }}
+}}"""
             
             resp = client.chat.completions.create(
                 model="deepseek-chat", 
@@ -111,45 +116,45 @@ if prompt := st.chat_input("Задайте вопрос..."):
             )
             data = json.loads(resp.choices[0].message.content)
             
-            drug = data.get(entity_name, data.get("drug", "none"))
-            effect = data.get(property_name, data.get("effect", "none"))
+            # Выводим рассуждение (как обычный ChatGPT)
+            reasoning_text = data.get("reasoning", "Нет рассуждений.")
+            st.markdown(reasoning_text)
             
-            if drug == "НЕТ_ДАННЫХ":
-                final_status = "warning"
-                final_text = f"⚠️ В извлеченных фрагментах нет ответа."
-                st.warning(final_text)
-                st.session_state.messages.append({"role": "assistant", "content": final_text, "status": final_status})
-            else:
-                result, msg_text, edges = verify_logic(drug, effect, domain, int(data.get("age", 30)), data.get("disease", "none"))
+            # Проверяем, нужно ли запускать Z3
+            verification = data.get("verification", {})
+            drug = verification.get("entity", "none")
+            effect = verification.get("effect", "none")
+            
+            final_status = None
+            final_text = ""
+            graph_html = ""
+            
+            if drug != "none" and effect != "none":
+                result, msg_text, edges = verify_logic(drug, effect, domain, int(verification.get("age", 30)), verification.get("disease", "none"))
                 
                 if result is True:
                     final_status = "success"
-                    final_text = f"✅ РАЗРЕШЕНО / ДОКАЗАНО: {msg_text}"
+                    final_text = f"✅ **Z3 Верификация:** {msg_text}"
                     st.success(final_text)
                 elif result is False:
                     final_status = "error"
-                    final_text = f"❌ ЗАБЛОКИРОВАНО: {msg_text}"
+                    final_text = f"❌ **Z3 Верификация:** {msg_text}"
                     st.error(final_text)
                 else:
                     final_status = "warning"
-                    final_text = f"⚠️ ТРЕБУЕТСЯ ЭКСПЕРТ: {msg_text}"
+                    final_text = f"⚠️ **Z3 Верификация:** {msg_text}"
                     st.warning(final_text)
                 
-                if data.get("reason"):
-                    st.info(f"💡 **Обоснование:** {data['reason']}")
+                if verification.get("reason"):
+                    st.info(f"💡 **Логическое обоснование:** {verification['reason']}")
                 
-                # ВАРИАНТ 2: Рисуем ПАУТИНУ (Источники + Логика)
-                graph_html = ""
+                # Рисуем паутину
                 if edges or sources:
                     net = Network(height="400px", width="100%", bgcolor="#0E1117", font_color="white", directed=True)
-                    
-                    # Добавляем логические связи Z3
                     for edge in edges:
                         net.add_node(edge[0], label=edge[0], color="#00FFAA", size=25)
                         net.add_node(edge[1], label=edge[1], color="#FF5555" if "Риск" in edge[1] else "#5555FF", size=20)
                         net.add_edge(edge[0], edge[1], color="#FFFFFF")
-                    
-                    # Добавляем связи с документами (Паутина источников)
                     for src in sources:
                         net.add_node(src, label=f"📄 {src}", color="#FFAA00", shape="box")
                         if drug != "none":
@@ -160,11 +165,11 @@ if prompt := st.chat_input("Задайте вопрос..."):
                         graph_html = f.read()
                     with st.expander("🕸️ Посмотреть паутину связей"):
                         components.html(graph_html, height=400)
-                
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": final_text, 
-                    "status": final_status,
-                    "reason": data.get("reason", ""),
-                    "graph": graph_html
-                })
+            
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "reasoning": reasoning_text,
+                "content": final_text,
+                "status": final_status,
+                "graph": graph_html
+            })
