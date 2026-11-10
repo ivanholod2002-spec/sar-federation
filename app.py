@@ -4,7 +4,7 @@ sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 import streamlit as st
 import streamlit.components.v1 as components
-import chromadb, json, uuid
+import chromadb, json, uuid, re
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
@@ -78,9 +78,8 @@ if prompt := st.chat_input("Задайте вопрос..."):
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("Око сканирует пространство..."):
+            with st.spinner("Око сканирует пространство (решение уравнений)..."):
                 
-                # Берем последние 3 сообщения для контекста
                 history_context = ""
                 if len(st.session_state.messages) > 1:
                     recent_msgs = st.session_state.messages[-3:-1]
@@ -102,22 +101,18 @@ if prompt := st.chat_input("Задайте вопрос..."):
                         except: pass
                     context = "\n\n".join(context_parts)
                     
-                    # ЖЕСТКИЙ ПРОМПТ: Запрещаем писать "Пользователь"
-                    llm_prompt = f"""Ты — Универсальный Синтезатор Знаний, общающийся напрямую с Человеком.
+                    llm_prompt = f"""Ты — Универсальный Синтезатор Знаний и математик.
 Твоя задача — дать глубокий, научный ответ, учитывая историю диалога.
-
 ИСТОРИЯ ДИАЛОГА:
 {history_context}
-
 КОНТЕКСТ ИЗ БАЗ:
 {context}
-
 ТЕКУЩИЙ ВОПРОС: {prompt}
 
-ПРАВИЛА ОТВЕТА:
-1. НИКОГДА не пиши в третьем лице (например, "Пользователь спрашивает..."). Обращайся напрямую ("Вы спрашиваете...", "Как вы заметили...").
-2. Не выводи свои размышления о том, как ты строишь ответ. Сразу пиши готовый научный текст.
-3. Если нужно продолжить предыдущую мысль (например, доказательство Гипотезы Римана), делай это, опираясь на историю.
+ПРАВИЛА:
+1. Обращайся напрямую ("Вы", "Давайте").
+2. Сразу пиши математический или научный текст (без воды).
+3. Если нужно продолжить доказательство (например, Гипотезу Римана), пиши конкретные шаги: какие операторы рассматривать, какие интегралы брать. Используй LaTeX для формул.
 
 Верни СТРОГО JSON:
 {{
@@ -135,18 +130,31 @@ if prompt := st.chat_input("Задайте вопрос..."):
 Верни СТРОГО JSON:
 {{"reasoning": "Твой прямой ответ."}}"""
 
-                # ВЫЗОВ LLM
+                # ВЫЗОВ LLM (max_tokens увеличен для математики)
                 resp = client.chat.completions.create(
                     model="deepseek-chat", 
                     messages=[{"role": "user", "content": llm_prompt}], 
-                    response_format={"type": "json_object"}
+                    response_format={"type": "json_object"},
+                    max_tokens=4096 # Даем модели разгуляться
                 )
-                data = json.loads(resp.choices[0].message.content)
                 
-                reasoning_text = data.get("reasoning", "Нет рассуждений.")
+                raw_content = resp.choices[0].message.content
+                
+                # ЗАЩИТА ОТ JSON ERROR: Если JSON сломался, достаем текст как есть
+                try:
+                    data = json.loads(raw_content)
+                    reasoning_text = data.get("reasoning", "Нет рассуждений.")
+                except json.JSONDecodeError:
+                    # Пытаемся вытащить текст из сломанного JSON через регулярку
+                    match = re.search(r'"reasoning":\s*"(.*)', raw_content, re.DOTALL)
+                    if match:
+                        reasoning_text = match.group(1).replace('\\n', '\n').rstrip('"}')
+                    else:
+                        reasoning_text = raw_content
+                    st.warning("⚠️ Ответ был очень длинным, произошла микро-ошибка формата, но текст сохранен.")
+
                 st.markdown(reasoning_text)
                 
-                # Сохраняем в историю (БЕЗ ГРАФОВ И БЕЗ КНОПОК)
                 st.session_state.messages.append({
                     "role": "assistant", 
                     "reasoning": reasoning_text
