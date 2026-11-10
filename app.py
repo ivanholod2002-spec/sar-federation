@@ -66,9 +66,6 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
             st.markdown(msg.get("reasoning", ""))
-            if "graph" in msg and msg["graph"]:
-                with st.expander("🕸️ Посмотреть паутину связей"):
-                    components.html(msg["graph"], height=400)
         else:
             st.markdown(msg["content"])
 
@@ -76,7 +73,6 @@ if prompt := st.chat_input("Задайте вопрос..."):
     if not selected_domain:
         st.error("Сначала загрузите документы.")
     else:
-        # 1. Сохраняем и показываем вопрос пользователя
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -84,15 +80,15 @@ if prompt := st.chat_input("Задайте вопрос..."):
         with st.chat_message("assistant"):
             with st.spinner("Око сканирует пространство..."):
                 
-                # ВАЖНО: Берем последние 3 сообщения для контекста
+                # Берем последние 3 сообщения для контекста
                 history_context = ""
                 if len(st.session_state.messages) > 1:
-                    recent_msgs = st.session_state.messages[-3:-1] # Берем предпоследние сообщения
+                    recent_msgs = st.session_state.messages[-3:-1]
                     for m in recent_msgs:
                         content = m.get("content", "") if m["role"] == "user" else m.get("reasoning", "")
-                        history_context += f"{m['role'].upper()}: {content}\n"
+                        role_name = "Человек" if m["role"] == "user" else "Ты"
+                        history_context += f"{role_name}: {content}\n"
 
-                # СБОР ДАННЫХ
                 if selected_domain == "universe":
                     context_parts = []
                     for col_name in existing_cols:
@@ -106,20 +102,26 @@ if prompt := st.chat_input("Задайте вопрос..."):
                         except: pass
                     context = "\n\n".join(context_parts)
                     
-                    # ОБНОВЛЕННЫЙ ПРОМПТ: Добавляем историю диалога
-                    llm_prompt = f"""Ты — Универсальный Синтезатор Знаний.
-Твоя задача — найти глубокие связи между науками и ответить на вопрос, учитывая ИСТОРИЮ ДИАЛОГА.
+                    # ЖЕСТКИЙ ПРОМПТ: Запрещаем писать "Пользователь"
+                    llm_prompt = f"""Ты — Универсальный Синтезатор Знаний, общающийся напрямую с Человеком.
+Твоя задача — дать глубокий, научный ответ, учитывая историю диалога.
+
 ИСТОРИЯ ДИАЛОГА:
 {history_context}
-Контекст из баз данных:
-{context}
-Текущий вопрос: {prompt}
 
-Напиши развернутый текст (поле "reasoning"), где объяснишь связи. Если вопрос короткий ("что дальше"), опирайся на историю диалога!
+КОНТЕКСТ ИЗ БАЗ:
+{context}
+
+ТЕКУЩИЙ ВОПРОС: {prompt}
+
+ПРАВИЛА ОТВЕТА:
+1. НИКОГДА не пиши в третьем лице (например, "Пользователь спрашивает..."). Обращайся напрямую ("Вы спрашиваете...", "Как вы заметили...").
+2. Не выводи свои размышления о том, как ты строишь ответ. Сразу пиши готовый научный текст.
+3. Если нужно продолжить предыдущую мысль (например, доказательство Гипотезы Римана), делай это, опираясь на историю.
+
 Верни СТРОГО JSON:
 {{
-  "reasoning": "Твой ответ...",
-  "verification": {{ "concept_a": "Название 1", "concept_b": "Название 2", "relation": "связь" }}
+  "reasoning": "Твой прямой и развернутый ответ (научный текст)."
 }}"""
                 else:
                     col = chroma_client.get_collection(name=selected_domain)
@@ -131,7 +133,7 @@ if prompt := st.chat_input("Задайте вопрос..."):
 Контекст: {context}
 Вопрос: {prompt}
 Верни СТРОГО JSON:
-{{"reasoning": "Твой ответ", "verification": {{"concept_a": "none", "concept_b": "none", "relation": "none"}}}}"""
+{{"reasoning": "Твой прямой ответ."}}"""
 
                 # ВЫЗОВ LLM
                 resp = client.chat.completions.create(
@@ -144,24 +146,8 @@ if prompt := st.chat_input("Задайте вопрос..."):
                 reasoning_text = data.get("reasoning", "Нет рассуждений.")
                 st.markdown(reasoning_text)
                 
-                # ВИЗУАЛИЗАЦИЯ
-                graph_html = ""
-                ver = data.get("verification", {})
-                c1, c2, rel = ver.get("concept_a", ""), ver.get("concept_b", ""), ver.get("relation", "")
-                
-                if c1 and c2 and c1 != "none":
-                    net = Network(height="400px", width="100%", bgcolor="#0E1117", font_color="white", directed=True)
-                    net.add_node(c1, label=c1, color="#00FFAA", size=30)
-                    net.add_node(c2, label=c2, color="#FF55FF", size=30)
-                    net.add_edge(c1, c2, label=rel, color="#FFFFFF", font={"color": "white"})
-                    net.save_graph("graph.html")
-                    with open("graph.html", "r", encoding="utf-8") as f:
-                        graph_html = f.read()
-                    with st.expander("🕸️ Посмотреть стык наук"):
-                        components.html(graph_html, height=400)
-
+                # Сохраняем в историю (БЕЗ ГРАФОВ И БЕЗ КНОПОК)
                 st.session_state.messages.append({
                     "role": "assistant", 
-                    "reasoning": reasoning_text,
-                    "graph": graph_html
+                    "reasoning": reasoning_text
                 })
