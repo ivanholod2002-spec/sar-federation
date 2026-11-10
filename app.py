@@ -17,7 +17,10 @@ from pypdf import PdfReader
 import io
 
 load_dotenv()
-client = OpenAI(api_key=os.getenv("API_KEY"), base_url=os.getenv("API_BASE"))
+api_key = st.secrets.get("API_KEY", os.getenv("API_KEY"))
+api_base = st.secrets.get("API_BASE", os.getenv("API_BASE"))
+
+client = OpenAI(api_key=api_key, base_url=api_base)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 st.set_page_config(page_title="САР-ФЕДЕРАЦИЯ", layout="wide")
@@ -43,7 +46,6 @@ with st.sidebar:
     with col_b:
         st.metric("Правил", m["rules_added"])
         st.metric("❌ Заблок.", m["verified_false"])
-    
     st.progress(min(m["verification_rate"] / 100, 1.0))
     st.caption(f"Верификация: {m['verification_rate']}%")
 
@@ -69,12 +71,9 @@ with st.sidebar:
         if st.button("1. Проглотить документ (RAG)"):
             progress_bar = st.progress(0, text="Читаю файл...")
             text = read_file_text()
-            # Делаем куски по 1500 символов для скорости
             chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
             
             target_cols = [collection_med, collection_law] if domain == "federation" else ([collection_law] if domain == "law" else [collection_med])
-            
-            # Отправляем ПАЧКАМИ по 100 штук
             batch_size = 100
             total_chunks = len(chunks)
             
@@ -83,10 +82,7 @@ with st.sidebar:
                     batch = chunks[i:i+batch_size]
                     ids = [str(uuid.uuid4()) for _ in batch]
                     metas = [{"source": uploaded_file.name} for _ in batch]
-                    
                     col.add(documents=batch, metadatas=metas, ids=ids)
-                    
-                    # Обновляем полоску прогресса
                     percent = min((i + batch_size) / total_chunks, 1.0)
                     progress_bar.progress(percent, text=f"Загрузка в базу: {int(percent*100)}%")
             
@@ -104,7 +100,6 @@ with st.sidebar:
                 else:
                     st.session_state['extracted_rules'] = extract_rules(text[:3000], domain, client)
 
-        # (Логика одобрения правил остается такой же, пропускаю для краткости, она ниже)
         if domain == "federation":
             if 'extracted_med' in st.session_state and st.session_state['extracted_med']:
                 st.info(f"Медицинских правил: {len(st.session_state['extracted_med'])}")
@@ -221,4 +216,3 @@ if st.button("Запустить анализ"):
                 with open("graph.html", "r", encoding="utf-8") as f: components.html(f.read(), height=520)
             else:
                 st.info("Граф не построен.")
-
