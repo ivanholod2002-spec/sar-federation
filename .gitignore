@@ -1,0 +1,9 @@
+﻿venv/
+lib/
+.env
+chroma_db/
+__pycache__/
+events.jsonl
+graph.html
+*.pdf
+*.txt
