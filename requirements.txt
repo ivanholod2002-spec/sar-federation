@@ -1,1 +1,9 @@
-
+﻿streamlit
+chromadb
+openai
+z3-solver
+python-dotenv
+pypdf
+pyvis
+networkx
+pysqlite3-binary
