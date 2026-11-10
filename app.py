@@ -1,4 +1,8 @@
-﻿import streamlit as st
+﻿__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+
+import streamlit as st
 import streamlit.components.v1 as components
 import chromadb, json, uuid
 from openai import OpenAI
@@ -217,3 +221,4 @@ if st.button("Запустить анализ"):
                 with open("graph.html", "r", encoding="utf-8") as f: components.html(f.read(), height=520)
             else:
                 st.info("Граф не построен.")
+
