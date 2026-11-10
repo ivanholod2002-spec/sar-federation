@@ -17,13 +17,17 @@ def normalize_effect(raw_effect, consequences):
     return None
 
 def verify_logic(drug, claimed_effect, domain: str = "medicine", age: int = 30, disease: str = "none"):
+    # ЗАЩИТА: Если LLM не нашла данных, мы не даем Z3 это проверить
+    if str(drug).lower() in ["none", "нет_данных", "null", ""] or str(claimed_effect).lower() in ["none", "нет_данных", "null", ""]:
+        return None, "В базе знаний нет конкретных фактов для проверки", []
+
     rules = load_rules(domain)
-    DRUG_TO_EFFECT = rules["drugs"]
-    EFFECT_TO_CONSEQUENCE = rules["consequences"]
+    DRUG_TO_EFFECT = rules.get("drugs", {})
+    EFFECT_TO_CONSEQUENCE = rules.get("consequences", {})
     
     effect_key = normalize_effect(claimed_effect, EFFECT_TO_CONSEQUENCE)
     if not effect_key:
-        return None, f"Эффект '{claimed_effect}' не распознан", []
+        return None, f"Понятие '{claimed_effect}' не распознано в онтологии '{domain}'", []
     
     s = Solver()
     
@@ -33,29 +37,23 @@ def verify_logic(drug, claimed_effect, domain: str = "medicine", age: int = 30, 
     disease_var = String('disease')
     age_var = Int('age')
     
-    # Устанавливаем текущий контекст
     s.add(drug_var == drug)
     s.add(disease_var == disease)
     s.add(age_var == age)
     
-    # Базовые правила из JSON (Препарат -> Эффект)
+    # Правила
     for d, effects in DRUG_TO_EFFECT.items():
         for e in effects:
             s.add(Implies(drug_var == d, effect_var == e))
             
-    # Сложные правила (Мульти-условия) - Хардкод для демонстрации
-    # Если Аспирин И возраст > 65 И болезнь Язва -> Смертельный риск
-    s.add(Implies(And(drug_var == "Аспирин", age_var > 65, disease_var == "Язва"), effect_var == "Смертельный риск"))
-    s.add(Implies(effect_var == "Смертельный риск", effect_var == "Опасно при язве")) # Связь с онтологией
-
-    # Проверяем гипотезу: является ли claimed_effect следствием
+    # Проверяем
     s.push()
     s.add(effect_var == effect_key)
     result = s.check()
     s.pop()
     
     if result == sat:
-        edges = [(drug, f"Возраст: {age}"), (f"Возраст: {age}", "Смертельный риск")] if age > 65 and disease == "Язва" else [(drug, effect_key)]
-        return True, f"Z3 доказал: {drug} (Возраст: {age}, {disease}) → {effect_key}", edges
+        edges = [(drug, effect_key)]
+        return True, f"Z3 доказал: {drug} → {effect_key}", edges
     else:
         return False, f"Z3 НЕ смог доказать: {drug} → {effect_key}", []
