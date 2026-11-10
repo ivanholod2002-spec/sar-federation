@@ -48,14 +48,12 @@ with st.sidebar:
                     col.add(documents=chunks, metadatas=[{"source": uploaded_file.name}]*len(chunks), ids=[str(uuid.uuid4()) for _ in chunks])
             st.success(f"Загружено {len(chunks)} чанков!")
 
-# --- ЧАТ ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
-            # Выводим вердикт красиво, без сырого HTML
             if msg.get("status") == "success": st.success(msg["content"])
             elif msg.get("status") == "error": st.error(msg["content"])
             else: st.warning(msg["content"])
@@ -64,7 +62,7 @@ for msg in st.session_state.messages:
                 st.info(f"💡 **Обоснование:** {msg['reason']}")
             
             if "graph" in msg and msg["graph"]:
-                with st.expander("Посмотреть граф связей"):
+                with st.expander("🕸️ Посмотреть паутину связей"):
                     components.html(msg["graph"], height=400)
         else:
             st.markdown(msg["content"])
@@ -75,23 +73,36 @@ if prompt := st.chat_input("Задайте вопрос..."):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Око анализирует..."):
+        with st.spinner("Око сканирует паутину..."):
             collection_med = chroma_client.get_or_create_collection("facts")
             collection_law = chroma_client.get_or_create_collection("facts_law")
-            facts_med = collection_med.query(query_texts=[prompt], n_results=1)['documents'][0]
-            facts_law = collection_law.query(query_texts=[prompt], n_results=1)['documents'][0] if domain == "federation" else []
+            
+            # ВАРИАНТ 1: Гибридный поиск (4 результата вместо 1)
+            res_med = collection_med.query(query_texts=[prompt], n_results=4)
+            res_law = collection_law.query(query_texts=[prompt], n_results=4) if domain == "federation" else {"documents": [[]], "metadatas": [[]]}
+            
+            facts_med, meta_med = res_med['documents'][0], res_med['metadatas'][0]
+            facts_law, meta_law = res_law['documents'][0], res_law['metadatas'][0]
+            
             context = "\n".join(facts_med + facts_law)
+            sources = list(set([m['source'] for m in meta_med + meta_law if m])) # Уникальные источники
             
             rules = load_rules(domain)
             allowed = list(rules.get("consequences", {}).keys())
             
-            # ЖЕСТКИЙ ПРОМПТ: Запрещаем использовать внешние знания
-            llm_prompt = f"""Ты — строгий аналитик. Отвечай ТОЛЬКО на основе предоставленного контекста.
-Контекст из базы знаний: {context}
-Если в контексте нет прямого ответа, напиши в поле "drug" слово "НЕТ_ДАННЫХ".
+            if domain == "law":
+                entity_name, property_name = "действие", "последствие"
+            else:
+                entity_name, property_name = "препарат", "эффект"
+            
+            # ВАРИАНТ 1: Умный промпт для обобщения
+            llm_prompt = f"""Ты — аналитик. Изучи фрагменты текста и ответь на вопрос.
+Если вопрос общий (например, "что такое..."), сделай вывод на основе того, что написано в этих фрагментах.
+Если информации нет, напиши "НЕТ_ДАННЫХ".
+Фрагменты: {context}
 Вопрос: {prompt}
 Верни СТРОГО JSON: 
-{{"drug": "название из контекста или НЕТ_ДАННЫХ", "effect": "из списка {allowed}", "age": 0, "disease": "none", "reason": "объяснение на основе фактов"}}"""
+{{"{entity_name}": "название/термин или НЕТ_ДАННЫХ", "{property_name}": "из списка {allowed}", "age": 0, "disease": "none", "reason": "объяснение"}}"""
             
             resp = client.chat.completions.create(
                 model="deepseek-chat", 
@@ -100,17 +111,20 @@ if prompt := st.chat_input("Задайте вопрос..."):
             )
             data = json.loads(resp.choices[0].message.content)
             
-            if data.get("drug") == "НЕТ_ДАННЫХ":
+            drug = data.get(entity_name, data.get("drug", "none"))
+            effect = data.get(property_name, data.get("effect", "none"))
+            
+            if drug == "НЕТ_ДАННЫХ":
                 final_status = "warning"
-                final_text = f"⚠️ В базе знаний нет информации по этому вопросу. Загрузите нужный документ."
+                final_text = f"⚠️ В извлеченных фрагментах нет ответа."
                 st.warning(final_text)
                 st.session_state.messages.append({"role": "assistant", "content": final_text, "status": final_status})
             else:
-                result, msg_text, edges = verify_logic(data.get("drug", ""), data.get("effect", ""), domain, int(data.get("age", 30)), data.get("disease", "none"))
+                result, msg_text, edges = verify_logic(drug, effect, domain, int(data.get("age", 30)), data.get("disease", "none"))
                 
                 if result is True:
                     final_status = "success"
-                    final_text = f"✅ РАЗРЕШЕНО: {msg_text}"
+                    final_text = f"✅ РАЗРЕШЕНО / ДОКАЗАНО: {msg_text}"
                     st.success(final_text)
                 elif result is False:
                     final_status = "error"
@@ -124,17 +138,27 @@ if prompt := st.chat_input("Задайте вопрос..."):
                 if data.get("reason"):
                     st.info(f"💡 **Обоснование:** {data['reason']}")
                 
+                # ВАРИАНТ 2: Рисуем ПАУТИНУ (Источники + Логика)
                 graph_html = ""
-                if edges:
+                if edges or sources:
                     net = Network(height="400px", width="100%", bgcolor="#0E1117", font_color="white", directed=True)
+                    
+                    # Добавляем логические связи Z3
                     for edge in edges:
-                        net.add_node(edge[0], label=edge[0], color="#00FFAA")
-                        net.add_node(edge[1], label=edge[1], color="#FF5555" if "Риск" in edge[1] else "#5555FF")
-                        net.add_edge(edge[0], edge[1])
+                        net.add_node(edge[0], label=edge[0], color="#00FFAA", size=25)
+                        net.add_node(edge[1], label=edge[1], color="#FF5555" if "Риск" in edge[1] else "#5555FF", size=20)
+                        net.add_edge(edge[0], edge[1], color="#FFFFFF")
+                    
+                    # Добавляем связи с документами (Паутина источников)
+                    for src in sources:
+                        net.add_node(src, label=f"📄 {src}", color="#FFAA00", shape="box")
+                        if drug != "none":
+                            net.add_edge(drug, src, dashes=True, color="#888888", title="Найдено в")
+                    
                     net.save_graph("graph.html")
                     with open("graph.html", "r", encoding="utf-8") as f:
                         graph_html = f.read()
-                    with st.expander("Посмотреть граф связей"):
+                    with st.expander("🕸️ Посмотреть паутину связей"):
                         components.html(graph_html, height=400)
                 
                 st.session_state.messages.append({
