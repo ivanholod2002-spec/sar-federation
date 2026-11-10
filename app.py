@@ -48,12 +48,14 @@ with st.sidebar:
                     col.add(documents=chunks, metadatas=[{"source": uploaded_file.name}]*len(chunks), ids=[str(uuid.uuid4()) for _ in chunks])
             st.success(f"Загружено {len(chunks)} чанков!")
 
+# --- ЧАТ ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
+            # Выводим вердикт красиво, без сырого HTML
             if msg.get("status") == "success": st.success(msg["content"])
             elif msg.get("status") == "error": st.error(msg["content"])
             else: st.warning(msg["content"])
@@ -83,20 +85,13 @@ if prompt := st.chat_input("Задайте вопрос..."):
             rules = load_rules(domain)
             allowed = list(rules.get("consequences", {}).keys())
             
-            # АДАПТИВНЫЙ ПРОМПТ
-            if domain == "law":
-                entity_name = "действие/договор"
-                property_name = "последствие"
-            else:
-                entity_name = "препарат"
-                property_name = "эффект"
-            
-            llm_prompt = f"""Ты — строгий аналитик. Отвечай ТОЛЬКО на основе контекста.
-Контекст: {context}
-Если в контексте нет прямого ответа, напиши "НЕТ_ДАННЫХ" в поле "{entity_name}".
+            # ЖЕСТКИЙ ПРОМПТ: Запрещаем использовать внешние знания
+            llm_prompt = f"""Ты — строгий аналитик. Отвечай ТОЛЬКО на основе предоставленного контекста.
+Контекст из базы знаний: {context}
+Если в контексте нет прямого ответа, напиши в поле "drug" слово "НЕТ_ДАННЫХ".
 Вопрос: {prompt}
 Верни СТРОГО JSON: 
-{{"{entity_name}": "название из контекста или НЕТ_ДАННЫХ", "{property_name}": "из списка {allowed}", "age": 0, "disease": "none", "reason": "объяснение"}}"""
+{{"drug": "название из контекста или НЕТ_ДАННЫХ", "effect": "из списка {allowed}", "age": 0, "disease": "none", "reason": "объяснение на основе фактов"}}"""
             
             resp = client.chat.completions.create(
                 model="deepseek-chat", 
@@ -105,21 +100,17 @@ if prompt := st.chat_input("Задайте вопрос..."):
             )
             data = json.loads(resp.choices[0].message.content)
             
-            # Извлекаем данные (в зависимости от домена)
-            drug = data.get(entity_name, data.get("drug", "none"))
-            effect = data.get(property_name, data.get("effect", "none"))
-            
-            if drug == "НЕТ_ДАННЫХ":
+            if data.get("drug") == "НЕТ_ДАННЫХ":
                 final_status = "warning"
-                final_text = f"⚠️ В загруженном контексте нет информации по этому вопросу."
+                final_text = f"⚠️ В базе знаний нет информации по этому вопросу. Загрузите нужный документ."
                 st.warning(final_text)
                 st.session_state.messages.append({"role": "assistant", "content": final_text, "status": final_status})
             else:
-                result, msg_text, edges = verify_logic(drug, effect, domain, int(data.get("age", 30)), data.get("disease", "none"))
+                result, msg_text, edges = verify_logic(data.get("drug", ""), data.get("effect", ""), domain, int(data.get("age", 30)), data.get("disease", "none"))
                 
                 if result is True:
                     final_status = "success"
-                    final_text = f"✅ РАЗРЕШЕНО / ДОКАЗАНО: {msg_text}"
+                    final_text = f"✅ РАЗРЕШЕНО: {msg_text}"
                     st.success(final_text)
                 elif result is False:
                     final_status = "error"
