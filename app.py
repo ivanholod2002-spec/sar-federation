@@ -16,7 +16,7 @@ from extractor import extract_rules
 from pypdf import PdfReader
 import io
 
-st.set_page_config(page_title="САР-ФЕДЕРАЦИЯ", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="САР-ВСЕЛЕННАЯ", page_icon="🌌", layout="wide")
 
 load_dotenv()
 api_key = st.secrets.get("API_KEY", os.getenv("API_KEY"))
@@ -24,16 +24,34 @@ api_base = st.secrets.get("API_BASE", os.getenv("API_BASE"))
 client = OpenAI(api_key=api_key, base_url=api_base)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
-st.title("🧠 САР-ФЕДЕРАЦИЯ: Neuro-Symbolic Engine")
+st.title("🌌 САР-ВСЕЛЕННАЯ: Синтез всех наук")
+
+# Получаем список всех созданных баз
+existing_cols = [c.name for c in chroma_client.list_collections()]
 
 with st.sidebar:
-    domain = st.radio("Домен:", ["medicine", "law", "federation"], format_func=lambda x: "🏥 Медицина" if x == "medicine" else ("⚖️ Право" if x == "law" else "🔗 Кросс-домен"))
-    m = compute_metrics()
-    st.metric("Верификация", f"{m['verification_rate']}%")
+    st.header("Управление Вселенной")
+    
+    # Режим: одна наука или стык всех
+    mode = st.radio("Режим:", ["🔬 Одна наука", "🌌 СТЫК ВСЕХ НАУК"])
+    
+    if mode == "🔬 Одна наука":
+        if existing_cols:
+            selected_domain = st.selectbox("Выберите науку:", existing_cols)
+        else:
+            selected_domain = None
+            st.warning("Сначала загрузите документы.")
+    else:
+        selected_domain = "universe"
+        st.info(f"В базе {len(existing_cols)} наук. Система найдет связи между ними.")
 
-    with st.expander("📁 Загрузить документ"):
+    st.divider()
+    
+    with st.expander("📁 Загрузить новую науку/профессию"):
+        new_domain_name = st.text_input("Название науки (напр: Музыка, Архитектура):")
         uploaded_file = st.file_uploader("TXT или PDF", type=["txt", "pdf"])
-        if uploaded_file and st.button("Проглотить (RAG)"):
+        
+        if uploaded_file and new_domain_name and st.button("Проглотить (RAG)"):
             file_extension = uploaded_file.name.split('.')[-1].lower()
             uploaded_file.seek(0)
             if file_extension == "pdf":
@@ -42,134 +60,114 @@ with st.sidebar:
                 text = uploaded_file.read().decode("utf-8")
             
             chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
-            target_cols = [chroma_client.get_or_create_collection("facts"), chroma_client.get_or_create_collection("facts_law")] if domain == "federation" else ([chroma_client.get_or_create_collection("facts_law")] if domain == "law" else [chroma_client.get_or_create_collection("facts")])
+            
+            # Создаем БЕЗОПАСНОЕ имя для базы данных
+            safe_name = "".join([c if c.isalnum() else "_" for c in new_domain_name]).lower()
+            col_name = f"domain_{safe_name}"
+            
+            target_col = chroma_client.get_or_create_collection(name=col_name)
             with st.spinner("Векторизация..."):
-                for col in target_cols:
-                    col.add(documents=chunks, metadatas=[{"source": uploaded_file.name}]*len(chunks), ids=[str(uuid.uuid4()) for _ in chunks])
-            st.success(f"Загружено {len(chunks)} чанков!")
+                target_col.add(documents=chunks, metadatas=[{"source": uploaded_file.name, "domain": new_domain_name}]*len(chunks), ids=[str(uuid.uuid4()) for _ in chunks])
+            st.success(f"Наука '{new_domain_name}' загружена! ({len(chunks)} чанков)")
+            st.rerun()
 
+# --- ЧАТ ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
-            # Сначала выводим текст рассуждения (как в ChatGPT)
             st.markdown(msg.get("reasoning", ""))
-            
-            # Затем выводим бейдж верификации Z3 (если есть)
-            if msg.get("status") == "success": st.success(msg["content"])
-            elif msg.get("status") == "error": st.error(msg["content"])
-            elif msg.get("status"): st.warning(msg["content"])
-            
             if "graph" in msg and msg["graph"]:
                 with st.expander("🕸️ Посмотреть паутину связей"):
                     components.html(msg["graph"], height=400)
         else:
             st.markdown(msg["content"])
 
-if prompt := st.chat_input("Задайте вопрос..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+if prompt := st.chat_input("Задайте вопрос (например: как музыка связана с математикой?)..."):
+    if not selected_domain:
+        st.error("Сначала выберите науку или загрузите документ.")
+    else:
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Око размышляет..."):
-            collection_med = chroma_client.get_or_create_collection("facts")
-            collection_law = chroma_client.get_or_create_collection("facts_law")
-            
-            res_med = collection_med.query(query_texts=[prompt], n_results=4)
-            res_law = collection_law.query(query_texts=[prompt], n_results=4) if domain == "federation" else {"documents": [[]], "metadatas": [[]]}
-            
-            facts_med, meta_med = res_med['documents'][0], res_med['metadatas'][0]
-            facts_law, meta_law = res_law['documents'][0], res_law['metadatas'][0]
-            
-            context = "\n".join(facts_med + facts_law)
-            sources = list(set([m['source'] for m in meta_med + meta_law if m]))
-            
-            rules = load_rules(domain)
-            allowed = list(rules.get("consequences", {}).keys())
-            
-            # НОВЫЙ ПРОМПТ: Сначала думаем, потом проверяем
-            llm_prompt = f"""Ты — экспертный ИИ-ассистент.
-Твоя задача: 1) Дать развернутый и умный ответ на вопрос (поле "reasoning"). 2) Выделить конкретный факт для математической проверки Z3 (поле "verification").
-Если вопрос общий (например, "что такое..."), просто ответь на него, а в поле "entity" напиши "none".
-Если вопрос требует проверки (например, "можно ли давать Х при Y"), выдели сущность и эффект.
-Контекст из базы: {context}
+        with st.chat_message("assistant"):
+            with st.spinner("Око сканирует пространство..."):
+                
+                # СБОР ДАННЫХ
+                if selected_domain == "universe":
+                    # Ищем во ВСЕХ базах
+                    context_parts = []
+                    for col_name in existing_cols:
+                        col = chroma_client.get_collection(name=col_name)
+                        try:
+                            res = col.query(query_texts=[prompt], n_results=1)
+                            if res['documents'][0]:
+                                facts = res['documents'][0][0]
+                                domain_label = res['metadatas'][0][0].get('domain', col_name)
+                                context_parts.append(f"[{domain_label}]: {facts}")
+                        except:
+                            pass
+                    context = "\n\n".join(context_parts)
+                    
+                    llm_prompt = f"""Ты — Универсальный Синтезатор Знаний. Твоя задача — найти глубокие связи (изоморфизмы) между разными науками.
+Контекст из разных областей:
+{context}
 Вопрос: {prompt}
+
+Напиши развернутый текст (поле "reasoning"), где объяснишь, как эти концепции связаны между собой.
+Затем выдели концепты для графа (поле "verification").
 Верни СТРОГО JSON:
 {{
-  "reasoning": "Твой подробный ответ на вопрос (2-3 абзаца). Опирайся на свои знания и контекст.",
+  "reasoning": "Твой глубокий ответ о связях.",
   "verification": {{
-    "entity": "название или none",
-    "effect": "из списка {allowed}",
-    "age": 0,
-    "disease": "none",
-    "reason": "почему Z3 это подтвердит"
+    "concept_a": "Название 1 (напр: Музыка)",
+    "concept_b": "Название 2 (напр: Математика)",
+    "relation": "связь (например, 'основана на')"
   }}
 }}"""
-            
-            resp = client.chat.completions.create(
-                model="deepseek-chat", 
-                messages=[{"role": "user", "content": llm_prompt}], 
-                response_format={"type": "json_object"}
-            )
-            data = json.loads(resp.choices[0].message.content)
-            
-            # Выводим рассуждение (как обычный ChatGPT)
-            reasoning_text = data.get("reasoning", "Нет рассуждений.")
-            st.markdown(reasoning_text)
-            
-            # Проверяем, нужно ли запускать Z3
-            verification = data.get("verification", {})
-            drug = verification.get("entity", "none")
-            effect = verification.get("effect", "none")
-            
-            final_status = None
-            final_text = ""
-            graph_html = ""
-            
-            if drug != "none" and effect != "none":
-                result, msg_text, edges = verify_logic(drug, effect, domain, int(verification.get("age", 30)), verification.get("disease", "none"))
-                
-                if result is True:
-                    final_status = "success"
-                    final_text = f"✅ **Z3 Верификация:** {msg_text}"
-                    st.success(final_text)
-                elif result is False:
-                    final_status = "error"
-                    final_text = f"❌ **Z3 Верификация:** {msg_text}"
-                    st.error(final_text)
                 else:
-                    final_status = "warning"
-                    final_text = f"⚠️ **Z3 Верификация:** {msg_text}"
-                    st.warning(final_text)
-                
-                if verification.get("reason"):
-                    st.info(f"💡 **Логическое обоснование:** {verification['reason']}")
-                
-                # Рисуем паутину
-                if edges or sources:
-                    net = Network(height="400px", width="100%", bgcolor="#0E1117", font_color="white", directed=True)
-                    for edge in edges:
-                        net.add_node(edge[0], label=edge[0], color="#00FFAA", size=25)
-                        net.add_node(edge[1], label=edge[1], color="#FF5555" if "Риск" in edge[1] else "#5555FF", size=20)
-                        net.add_edge(edge[0], edge[1], color="#FFFFFF")
-                    for src in sources:
-                        net.add_node(src, label=f"📄 {src}", color="#FFAA00", shape="box")
-                        if drug != "none":
-                            net.add_edge(drug, src, dashes=True, color="#888888", title="Найдено в")
+                    col = chroma_client.get_collection(name=selected_domain)
+                    facts = col.query(query_texts=[prompt], n_results=4)['documents'][0]
+                    context = "\n".join(facts)
                     
+                    llm_prompt = f"""Ответь на вопрос, опираясь на контекст.
+Контекст: {context}
+Вопрос: {prompt}
+Верни СТРОГО JSON:
+{{"reasoning": "Твой ответ", "verification": {{"concept_a": "none", "concept_b": "none", "relation": "none"}}}}"""
+
+                # ВЫЗОВ LLM
+                resp = client.chat.completions.create(
+                    model="deepseek-chat", 
+                    messages=[{"role": "user", "content": llm_prompt}], 
+                    response_format={"type": "json_object"}
+                )
+                data = json.loads(resp.choices[0].message.content)
+                
+                reasoning_text = data.get("reasoning", "Нет рассуждений.")
+                st.markdown(reasoning_text)
+                
+                # ВИЗУАЛИЗАЦИЯ (Паутина связей)
+                graph_html = ""
+                ver = data.get("verification", {})
+                c1, c2, rel = ver.get("concept_a", ""), ver.get("concept_b", ""), ver.get("relation", "")
+                
+                if c1 and c2 and c1 != "none":
+                    net = Network(height="400px", width="100%", bgcolor="#0E1117", font_color="white", directed=True)
+                    net.add_node(c1, label=c1, color="#00FFAA", size=30, title="Концепт А")
+                    net.add_node(c2, label=c2, color="#FF55FF", size=30, title="Концепт Б")
+                    net.add_edge(c1, c2, label=rel, color="#FFFFFF", font={"color": "white"})
                     net.save_graph("graph.html")
                     with open("graph.html", "r", encoding="utf-8") as f:
                         graph_html = f.read()
-                    with st.expander("🕸️ Посмотреть паутину связей"):
+                    with st.expander("🕸️ Посмотреть стык наук"):
                         components.html(graph_html, height=400)
-            
-            st.session_state.messages.append({
-                "role": "assistant", 
-                "reasoning": reasoning_text,
-                "content": final_text,
-                "status": final_status,
-                "graph": graph_html
-            })
+
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "reasoning": reasoning_text,
+                    "graph": graph_html
+                })
