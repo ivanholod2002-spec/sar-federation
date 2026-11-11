@@ -18,75 +18,67 @@ import io
 
 st.set_page_config(page_title="DZIMO", page_icon="🧠", layout="wide")
 
-# --- CSS МАГИЯ: ТОЧНАЯ КОПИЯ DEEPSEEK ---
+# --- CSS: ТОЧНАЯ КОПИЯ DEEPSEEK ---
 st.markdown("""
 <style>
-    /* Скрываем стандартный хедер и футер */
+    /* Прячем лишнее */
     header {visibility: hidden;}
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    
-    /* Делаем фон белым */
     .stApp { background-color: #ffffff; }
     
-    /* Стилизация контейнера с кнопками (прилипает к полю ввода) */
-    div[data-testid="stHorizontalBlock"] {
-        background-color: #f9f9f9;
-        padding: 10px;
-        border-radius: 15px 15px 0 0;
-        border: 1px solid #e0e0e0;
-        border-bottom: none;
-        margin-bottom: -15px; /* Сдвигаем вниз, чтобы слилось с полем */
+    /* Стилизуем само поле ввода (делаем его как у DeepSeek) */
+    div[data-testid="stChatInput"] {
+        border-radius: 16px !important;
+        border: 1px solid #d1d5db !important;
+        background-color: #ffffff !important;
+        padding: 8px 8px 50px 8px !important; /* Оставляем место снизу для кнопок */
+        box-shadow: 0 2px 6px rgba(0,0,0,0.05) !important;
     }
     
-    /* Стилизация самих кнопок-таблеток */
-    button[data-testid="baseButton-secondary"] {
-        border-radius: 20px !important;
-        border: 1px solid #d0d0d0 !important;
-        background-color: #ffffff !important;
-        color: #333 !important;
-        padding: 6px 16px !important;
-        font-size: 14px !important;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-    }
-    button[data-testid="baseButton-primary"] {
-        border-radius: 20px !important;
-        border: 1px solid #4A90E2 !important;
-        background-color: #f0f4ff !important;
-        color: #4A90E2 !important;
-        padding: 6px 16px !important;
-        font-size: 14px !important;
+    /* Убираем рамку у текстового поля внутри */
+    div[data-testid="stChatInput"] textarea {
+        border: none !important;
+        box-shadow: none !important;
+        background-color: transparent !important;
     }
 
-    /* Стилизация поля ввода, чтобы оно прилипло к кнопкам */
-    div[data-testid="stChatInput"] {
-        border-radius: 0 0 15px 15px !important;
-        border: 1px solid #e0e0e0;
-        border-top: 1px solid #f0f0f0;
-        background-color: #f9f9f9;
-        padding-bottom: 10px;
+    /* Магия: поднимаем кастомные кнопки ВНУТРЬ поля ввода */
+    .custom-input-buttons {
+        display: flex;
+        gap: 8px;
+        margin-top: -42px;
+        margin-left: 12px;
+        position: relative;
+        z-index: 999;
     }
     
-    /* Красивые иконки под сообщениями */
-    .action-icons {
+    /* Стиль таблеток */
+    .ds-pill {
         display: flex;
-        gap: 15px;
-        margin-top: 10px;
-        opacity: 0.6;
-        transition: opacity 0.2s;
-    }
-    .action-icons:hover { opacity: 1; }
-    .action-icons svg {
-        width: 18px;
-        height: 18px;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        border: 1px solid #e5e7eb;
+        border-radius: 20px;
+        font-size: 13px;
+        color: #4b5563;
+        background: #ffffff;
         cursor: pointer;
-        fill: none;
-        stroke: #555;
-        stroke-width: 2;
-        stroke-linecap: round;
-        stroke-linejoin: round;
+        transition: 0.2s;
     }
-    .action-icons svg:hover { stroke: #000; }
+    .ds-pill:hover { background: #f3f4f6; }
+    .ds-pill.active { background: #eff6ff; border-color: #3b82f6; color: #3b82f6; }
+    
+    /* Иконки под сообщениями */
+    .msg-icons {
+        display: flex;
+        gap: 14px;
+        margin-top: 8px;
+        opacity: 0.6;
+    }
+    .msg-icons svg { width: 16px; height: 16px; cursor: pointer; stroke: #555; fill: none; stroke-width: 2; }
+    .msg-icons svg:hover { stroke: #000; opacity: 1; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -96,10 +88,9 @@ api_base = st.secrets.get("API_BASE", os.getenv("API_BASE"))
 client = OpenAI(api_key=api_key, base_url=api_base)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
-# Получаем список наук
 existing_cols = [c.name.replace("domain_", "").capitalize() for c in chroma_client.list_collections()]
 
-# --- БОКОВАЯ ПАНЕЛЬ ---
+# --- БОКОВАЯ ПАНЕЛЬ (Загрузка) ---
 with st.sidebar:
     st.header("📁 База знаний")
     with st.expander("Загрузить новую науку"):
@@ -108,10 +99,7 @@ with st.sidebar:
         if uploaded_file and new_domain_name and st.button("Проглотить"):
             file_extension = uploaded_file.name.split('.')[-1].lower()
             uploaded_file.seek(0)
-            if file_extension == "pdf":
-                text = "".join([p.extract_text() or "" for p in PdfReader(io.BytesIO(uploaded_file.read())).pages])
-            else:
-                text = uploaded_file.read().decode("utf-8")
+            text = "".join([p.extract_text() or "" for p in PdfReader(io.BytesIO(uploaded_file.read())).pages]) if file_extension == "pdf" else uploaded_file.read().decode("utf-8")
             chunks = [text[i:i+1500] for i in range(0, len(text), 1500)]
             safe_name = "".join([c if c.isalnum() else "_" for c in new_domain_name]).lower()
             target_col = chroma_client.get_or_create_collection(name=f"domain_{safe_name}")
@@ -126,14 +114,16 @@ st.caption("Neuro-Symbolic Engine")
 # --- ЧАТ ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "mode" not in st.session_state:
+    st.session_state.mode = "science"
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
             st.markdown(msg.get("reasoning", ""))
-            # ИКОНКИ ПОД СООБЩЕНИЕМ (Как на скрине)
+            # Ряд иконок под ответом (копировать, обновить, лайк, дизлайк, озвучить)
             st.markdown("""
-            <div class="action-icons">
+            <div class="msg-icons">
                 <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 <svg viewBox="0 0 24 24"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                 <svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>
@@ -144,30 +134,26 @@ for msg in st.session_state.messages:
         else:
             st.markdown(msg["content"])
 
-# --- ПАНЕЛЬ УПРАВЛЕНИЯ (Точная копия) ---
-# Используем колонки, чтобы кнопки были слева
-col1, col2, col3 = st.columns([2, 2, 6])
-
-with col1:
-    deep_mode = st.button("🌌 Глубокое погружение", use_container_width=True)
-with col2:
-    science_mode = st.button("🌐 Умный поиск (Наука)", use_container_width=True)
-
-# Логика переключения режимов
-if deep_mode:
-    st.session_state.mode = "deep"
-if science_mode:
-    st.session_state.mode = "science"
-
-if "mode" not in st.session_state:
-    st.session_state.mode = "science"
-
-selected_domain = None
+# --- ВЫБОР НАУКИ (если выбран режим науки) ---
 if st.session_state.mode == "science" and existing_cols:
     selected_domain = st.selectbox("Выберите науку:", existing_cols, label_visibility="collapsed")
 
-# --- ВВОД ---
-if prompt := st.chat_input("Сообщение для DZIMO..."):
+# --- КАСТОМНЫЕ КНОПКИ ВНУТРИ ПОЛЯ ВВОДА ---
+# Используем две колонки, чтобы отрисовать кнопки
+c1, c2, c3 = st.columns([2, 2, 6])
+
+with c1:
+    if st.button("🌌 Глубокое погружение", use_container_width=True, type="primary" if st.session_state.mode=="deep" else "secondary"):
+        st.session_state.mode = "deep"
+        st.rerun()
+
+with c2:
+    if st.button("🌐 Умный поиск (Наука)", use_container_width=True, type="primary" if st.session_state.mode=="science" else "secondary"):
+        st.session_state.mode = "science"
+        st.rerun()
+
+# --- ПОЛЕ ВВОДА ---
+if prompt := st.chat_input("Сообщение для DeepSeek..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -176,10 +162,8 @@ if prompt := st.chat_input("Сообщение для DZIMO..."):
         with st.spinner("Анализирую..."):
             history_context = ""
             if len(st.session_state.messages) > 1:
-                recent_msgs = st.session_state.messages[-3:-1]
-                for m in recent_msgs:
-                    content = m.get("content", "") if m["role"] == "user" else m.get("reasoning", "")
-                    history_context += f"{m['role'].upper()}: {content}\n"
+                for m in st.session_state.messages[-3:-1]:
+                    history_context += f"{m['role'].upper()}: {m.get('content') or m.get('reasoning')}\n"
 
             if st.session_state.mode == "deep":
                 context_parts = []
@@ -187,44 +171,26 @@ if prompt := st.chat_input("Сообщение для DZIMO..."):
                     col = chroma_client.get_collection(name=col_name.name)
                     try:
                         res = col.query(query_texts=[prompt], n_results=1)
-                        if res['documents'][0]:
-                            context_parts.append(f"[{res['metadatas'][0][0].get('domain', col_name.name)}]: {res['documents'][0][0]}")
+                        if res['documents'][0]: context_parts.append(f"[{res['metadatas'][0][0].get('domain')}]: {res['documents'][0][0]}")
                     except: pass
                 context = "\n\n".join(context_parts)
-                
-                llm_prompt = f"""Ты — DZIMO. Режим: Глубокое погружение (Стык наук).
-ИСТОРИЯ: {history_context}
-КОНТЕКСТ: {context}
-ВОПРОС: {prompt}
-Найди изоморфизмы (связи) между разными науками. Пиши научно.
-Верни СТРОГО JSON: {{"reasoning": "Твой ответ."}}"""
-
+                llm_prompt = f"Ты DZIMO. Режим: Стык наук.\nИСТОРИЯ: {history_context}\nКОНТЕКСТ: {context}\nВОПРОС: {prompt}\nНайди изоморфизмы. Верни JSON: {{\"reasoning\": \"текст\"}}"
             else:
-                if not selected_domain:
+                if 'selected_domain' not in locals() or not selected_domain:
                     st.error("Выберите науку!")
                     st.stop()
                 col_name = [c.name for c in chroma_client.list_collections() if c.name.replace("domain_", "").capitalize() == selected_domain][0]
-                col = chroma_client.get_collection(name=col_name)
-                facts = col.query(query_texts=[prompt], n_results=3)['documents'][0]
+                facts = chroma_client.get_collection(name=col_name).query(query_texts=[prompt], n_results=3)['documents'][0]
                 context = "\n".join(facts)
-                
-                llm_prompt = f"""Ты — DZIMO. Режим: Умный поиск (Наука: {selected_domain}).
-ИСТОРИЯ: {history_context}
-КОНТЕКСТ: {context}
-ВОПРОС: {prompt}
-Отвечай строго по теме ({selected_domain}). Если пользователь сменил тему, начни с фразы: "Вижу, мы перешли на другую тему..." и отвечай на новый вопрос.
-Верни СТРОГО JSON: {{"reasoning": "Твой ответ."}}"""
+                llm_prompt = f"Ты DZIMO. Режим: Наука ({selected_domain}).\nИСТОРИЯ: {history_context}\nКОНТЕКСТ: {context}\nВОПРОС: {prompt}\nЕсли сменили тему, начни: 'Вижу, мы перешли на другую тему...'. Верни JSON: {{\"reasoning\": \"текст\"}}"
 
-            resp = client.chat.completions.create(
-                model="deepseek-chat", messages=[{"role": "user", "content": llm_prompt}], response_format={"type": "json_object"}
-            )
-            data = json.loads(resp.choices[0].message.content)
-            reasoning_text = data.get("reasoning", "Нет ответа.")
+            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": llm_prompt}], response_format={"type": "json_object"})
+            reasoning_text = json.loads(resp.choices[0].message.content).get("reasoning", "Нет ответа.")
 
             st.markdown(reasoning_text)
-            # Добавляем иконки и к новому сообщению
+            # Иконки под новым ответом
             st.markdown("""
-            <div class="action-icons">
+            <div class="msg-icons">
                 <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                 <svg viewBox="0 0 24 24"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
                 <svg viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"></path></svg>
