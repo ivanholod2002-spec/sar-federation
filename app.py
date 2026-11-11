@@ -3,73 +3,58 @@ import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 import streamlit as st
-import streamlit.components.v1 as components
 import chromadb, json, uuid
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
 from z3_verifier import verify_logic, load_rules
-from pyvis.network import Network
-from event_log import log_event, verify_chain
-from metrics import compute_metrics
-from extractor import extract_rules
 from pypdf import PdfReader
 import io
 
 st.set_page_config(page_title="DZIMO", page_icon="🧠", layout="wide")
 
-# --- CSS: ТОЧНАЯ КОПИЯ DEEPSEEK ---
+# --- CSS: ДЕЛАЕМ КНОПКИ КРАСИВЫМИ (Как пилюли) ---
 st.markdown("""
 <style>
-    /* Прячем лишнее */
+    /* Скрываем лишнее */
     header {visibility: hidden;}
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stApp { background-color: #ffffff; }
     
-    /* Стилизуем само поле ввода (делаем его как у DeepSeek) */
-    div[data-testid="stChatInput"] {
-        border-radius: 16px !important;
-        border: 1px solid #d1d5db !important;
-        background-color: #ffffff !important;
-        padding: 8px 8px 50px 8px !important; /* Оставляем место снизу для кнопок */
-        box-shadow: 0 2px 6px rgba(0,0,0,0.05) !important;
-    }
-    
-    /* Убираем рамку у текстового поля внутри */
-    div[data-testid="stChatInput"] textarea {
-        border: none !important;
-        box-shadow: none !important;
-        background-color: transparent !important;
-    }
-
-    /* Магия: поднимаем кастомные кнопки ВНУТРЬ поля ввода */
-    .custom-input-buttons {
+    /* Стилизация радио-кнопок под таблетки DeepSeek */
+    div[role="radiogroup"] {
         display: flex;
-        gap: 8px;
-        margin-top: -42px;
-        margin-left: 12px;
-        position: relative;
-        z-index: 999;
+        flex-direction: row;
+        gap: 10px;
+        margin-bottom: -10px; /* Приближаем к полю ввода */
     }
-    
-    /* Стиль таблеток */
-    .ds-pill {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 12px;
+    div[role="radiogroup"] label {
         border: 1px solid #e5e7eb;
         border-radius: 20px;
-        font-size: 13px;
+        padding: 6px 16px;
+        background-color: #ffffff;
         color: #4b5563;
-        background: #ffffff;
         cursor: pointer;
         transition: 0.2s;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
     }
-    .ds-pill:hover { background: #f3f4f6; }
-    .ds-pill.active { background: #eff6ff; border-color: #3b82f6; color: #3b82f6; }
-    
+    div[role="radiogroup"] label:hover {
+        background-color: #f3f4f6;
+    }
+    /* Убираем стандартный кружок радио */
+    div[role="radiogroup"] label > div:first-child {
+        display: none;
+    }
+    /* Активная кнопка */
+    div[role="radiogroup"] label[data-checked="true"] {
+        background-color: #eff6ff;
+        border-color: #3b82f6;
+        color: #3b82f6;
+    }
+
     /* Иконки под сообщениями */
     .msg-icons {
         display: flex;
@@ -88,6 +73,7 @@ api_base = st.secrets.get("API_BASE", os.getenv("API_BASE"))
 client = OpenAI(api_key=api_key, base_url=api_base)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
+# Список наук (убираем префиксы domain_)
 existing_cols = [c.name.replace("domain_", "").capitalize() for c in chroma_client.list_collections()]
 
 # --- БОКОВАЯ ПАНЕЛЬ (Загрузка) ---
@@ -114,14 +100,12 @@ st.caption("Neuro-Symbolic Engine")
 # --- ЧАТ ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "mode" not in st.session_state:
-    st.session_state.mode = "science"
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
             st.markdown(msg.get("reasoning", ""))
-            # Ряд иконок под ответом (копировать, обновить, лайк, дизлайк, озвучить)
+            # Ряд иконок под ответом
             st.markdown("""
             <div class="msg-icons">
                 <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
@@ -134,26 +118,25 @@ for msg in st.session_state.messages:
         else:
             st.markdown(msg["content"])
 
-# --- ВЫБОР НАУКИ (если выбран режим науки) ---
-if st.session_state.mode == "science" and existing_cols:
-    selected_domain = st.selectbox("Выберите науку:", existing_cols, label_visibility="collapsed")
+# --- ПАНЕЛЬ УПРАВЛЕНИЯ (Переключатели) ---
+# Используем st.radio, замаскированный под кнопки
+mode = st.radio(
+    "Режим работы", 
+    ["🌌 Глубокое погружение", "🌐 Умный поиск (Наука)"], 
+    horizontal=True, 
+    label_visibility="collapsed"
+)
 
-# --- КАСТОМНЫЕ КНОПКИ ВНУТРИ ПОЛЯ ВВОДА ---
-# Используем две колонки, чтобы отрисовать кнопки
-c1, c2, c3 = st.columns([2, 2, 6])
+# Если выбран режим Науки, показываем выпадающий список
+selected_domain = None
+if mode == "🌐 Умный поиск (Наука)":
+    if existing_cols:
+        selected_domain = st.selectbox("Выберите науку:", existing_cols)
+    else:
+        st.warning("⚠️ Загрузите документы в боковой панели, чтобы выбрать науку.")
 
-with c1:
-    if st.button("🌌 Глубокое погружение", use_container_width=True, type="primary" if st.session_state.mode=="deep" else "secondary"):
-        st.session_state.mode = "deep"
-        st.rerun()
-
-with c2:
-    if st.button("🌐 Умный поиск (Наука)", use_container_width=True, type="primary" if st.session_state.mode=="science" else "secondary"):
-        st.session_state.mode = "science"
-        st.rerun()
-
-# --- ПОЛЕ ВВОДА ---
-if prompt := st.chat_input("Сообщение для DeepSeek..."):
+# --- ПОЛЕ ВВОДА (Всегда внизу) ---
+if prompt := st.chat_input("Сообщение для DZIMO..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -165,29 +148,38 @@ if prompt := st.chat_input("Сообщение для DeepSeek..."):
                 for m in st.session_state.messages[-3:-1]:
                     history_context += f"{m['role'].upper()}: {m.get('content') or m.get('reasoning')}\n"
 
-            if st.session_state.mode == "deep":
+            if mode == "🌌 Глубокое погружение":
                 context_parts = []
                 for col_name in chroma_client.list_collections():
                     col = chroma_client.get_collection(name=col_name.name)
                     try:
                         res = col.query(query_texts=[prompt], n_results=1)
-                        if res['documents'][0]: context_parts.append(f"[{res['metadatas'][0][0].get('domain')}]: {res['documents'][0][0]}")
+                        if res['documents'][0]: 
+                            context_parts.append(f"[{res['metadatas'][0][0].get('domain')}]: {res['documents'][0][0]}")
                     except: pass
                 context = "\n\n".join(context_parts)
-                llm_prompt = f"Ты DZIMO. Режим: Стык наук.\nИСТОРИЯ: {history_context}\nКОНТЕКСТ: {context}\nВОПРОС: {prompt}\nНайди изоморфизмы. Верни JSON: {{\"reasoning\": \"текст\"}}"
+                
+                llm_prompt = f"Ты DZIMO. Режим: Стык наук.\nИСТОРИЯ: {history_context}\nКОНТЕКСТ: {context}\nВОПРОС: {prompt}\nНайди изоморфизмы (связи) между разными науками. Верни JSON: {{\"reasoning\": \"текст\"}}"
+            
             else:
-                if 'selected_domain' not in locals() or not selected_domain:
+                if not selected_domain:
                     st.error("Выберите науку!")
                     st.stop()
+                
+                # Находим точное имя коллекции
                 col_name = [c.name for c in chroma_client.list_collections() if c.name.replace("domain_", "").capitalize() == selected_domain][0]
-                facts = chroma_client.get_collection(name=col_name).query(query_texts=[prompt], n_results=3)['documents'][0]
+                col = chroma_client.get_collection(name=col_name)
+                
+                facts = col.query(query_texts=[prompt], n_results=3)['documents'][0]
                 context = "\n".join(facts)
-                llm_prompt = f"Ты DZIMO. Режим: Наука ({selected_domain}).\nИСТОРИЯ: {history_context}\nКОНТЕКСТ: {context}\nВОПРОС: {prompt}\nЕсли сменили тему, начни: 'Вижу, мы перешли на другую тему...'. Верни JSON: {{\"reasoning\": \"текст\"}}"
+                
+                llm_prompt = f"Ты DZIMO. Режим: Наука ({selected_domain}).\nИСТОРИЯ: {history_context}\nКОНТЕКСТ: {context}\nВОПРОС: {prompt}\nЕсли пользователь резко сменил тему, начни ответ с 'Вижу, мы перешли на другую тему. Ок...'. Верни JSON: {{\"reasoning\": \"текст\"}}"
 
             resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": llm_prompt}], response_format={"type": "json_object"})
             reasoning_text = json.loads(resp.choices[0].message.content).get("reasoning", "Нет ответа.")
 
             st.markdown(reasoning_text)
+            
             # Иконки под новым ответом
             st.markdown("""
             <div class="msg-icons">
