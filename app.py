@@ -18,30 +18,43 @@ import io
 
 st.set_page_config(page_title="DZIMO | Neuro-Symbolic AI", page_icon="🧠", layout="wide")
 
-# --- КАСТОМНЫЙ CSS ДЛЯ КРАСОТЫ (Стиль DeepSeek) ---
+# --- КАСТОМНЫЙ CSS (Стиль DeepSeek) ---
 st.markdown("""
 <style>
-    /* Скрываем стандартный хедер Streamlit */
-    #MainMenu {visibility: hidden;}
+    /* Делаем фон светлым и чистым */
+    .stApp { background-color: #ffffff; }
+    
+    /* Прячем стандартный хедер */
     header {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
     
-    /* Стилизация кнопок-переключателей */
-    .stButton > button {
-        border-radius: 20px;
-        border: 1px solid #e0e0e0;
-        padding: 5px 15px;
-        font-size: 14px;
-        transition: all 0.3s;
-    }
-    .stButton > button:hover {
-        border-color: #4A90E2;
-        color: #4A90E2;
+    /* Стилизуем контейнер с кнопками, чтобы он прилипал к низу */
+    .bottom-controls {
+        position: fixed;
+        bottom: 85px; /* Высота строки ввода */
+        left: 20%;
+        right: 20%;
+        background: white;
+        z-index: 999;
     }
     
-    /* Красивые блоки ответов */
-    .stChatMessage {
-        background-color: transparent;
-        border-radius: 12px;
+    /* Стилизация кнопок-таблеток (Pills) */
+    div[data-testid="stPills"] > div {
+        display: flex;
+        gap: 10px;
+    }
+    div[data-testid="stPills"] button {
+        border-radius: 20px !important;
+        border: 1px solid #e0e0e0 !important;
+        background-color: transparent !important;
+        color: #333 !important;
+        padding: 5px 15px !important;
+        font-size: 14px !important;
+    }
+    div[data-testid="stPills"] button[aria-checked="true"] {
+        background-color: #f0f4ff !important;
+        border-color: #4A90E2 !important;
+        color: #4A90E2 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -52,12 +65,13 @@ api_base = st.secrets.get("API_BASE", os.getenv("API_BASE"))
 client = OpenAI(api_key=api_key, base_url=api_base)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
-st.title("🧠 DZIMO: Neuro-Symbolic Engine")
+st.title("🧠 DZIMO")
+st.caption("Neuro-Symbolic Engine для решения сложных задач")
 
 # Получаем список всех наук из базы
-existing_cols = [c.name for c in chroma_client.list_collections()]
+existing_cols = [c.name.replace("domain_", "").capitalize() for c in chroma_client.list_collections()]
 
-# --- БОКОВАЯ ПАНЕЛЬ (Только для админа/загрузки) ---
+# --- БОКОВАЯ ПАНЕЛЬ (Загрузка) ---
 with st.sidebar:
     st.header("📁 База знаний")
     with st.expander("Загрузить новую науку"):
@@ -80,13 +94,10 @@ with st.sidebar:
             st.success(f"Наука '{new_domain_name}' загружена!")
             st.rerun()
 
-# --- ИНТЕРФЕЙС ЧАТА ---
+# --- ЧАТ ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "mode" not in st.session_state:
-    st.session_state.mode = "science" # По умолчанию - конкретная наука
 
-# Отображаем историю
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
@@ -94,38 +105,39 @@ for msg in st.session_state.messages:
         else:
             st.markdown(msg["content"])
 
-# --- ПАНЕЛЬ УПРАВЛЕНИЯ НАД ВВОДОМ (Как у DeepSeek) ---
-st.markdown("---")
-col1, col2, col3 = st.columns([2, 2, 6])
+# --- НИЖНЯЯ ПАНЕЛЬ УПРАВЛЕНИЯ (КАК У DEEPSEEK) ---
+# Создаем контейнер внизу экрана
+st.markdown('<div class="bottom-controls">', unsafe_allow_html=True)
 
-with col1:
-    if st.button("🌌 Глубокое погружение", use_container_width=True):
-        st.session_state.mode = "deep"
-with col2:
-    if st.button("🔬 Конкретная наука", use_container_width=True):
-        st.session_state.mode = "science"
+# Кнопки-переключатели режимов (Pills)
+mode = st.pills(
+    "Режим работы", 
+    ["🌌 Глубокое погружение (Стык наук)", "🔬 Конкретная наука"], 
+    default="🔬 Конкретная наука",
+    label_visibility="collapsed"
+)
 
-# Если выбран режим науки, показываем выпадающий список
+# Если выбрана конкретная наука, показываем выпадающий список прямо под кнопками
 selected_domain = None
-if st.session_state.mode == "science":
-    if existing_cols:
-        selected_domain = st.selectbox("Выберите область (профессию/науку):", existing_cols, label_visibility="collapsed")
-    else:
-        st.warning("Загрузите документы в боковой панели, чтобы выбрать науку.")
+if mode == "🔬 Конкретная наука" and existing_cols:
+    selected_domain = st.selectbox(
+        "Выберите область знаний:", 
+        existing_cols, 
+        label_visibility="collapsed"
+    )
+
+st.markdown('</div>', unsafe_allow_html=True)
 
 # --- ВВОД СООБЩЕНИЯ ---
 if prompt := st.chat_input("Сообщение для DZIMO..."):
     
-    # 1. Сохраняем и показываем вопрос пользователя
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 2. Логика DZIMO
     with st.chat_message("assistant"):
-        with st.spinner("Анализирую..."):
+        with st.spinner("DZIMO анализирует..."):
             
-            # Берем последние 3 сообщения для контекста
             history_context = ""
             if len(st.session_state.messages) > 1:
                 recent_msgs = st.session_state.messages[-3:-1]
@@ -133,16 +145,16 @@ if prompt := st.chat_input("Сообщение для DZIMO..."):
                     content = m.get("content", "") if m["role"] == "user" else m.get("reasoning", "")
                     history_context += f"{m['role'].upper()}: {content}\n"
 
-            # --- РЕЖИМ 1: ГЛУБОКОЕ ПОГРУЖЕНИЕ (Стык всех наук) ---
-            if st.session_state.mode == "deep":
+            # --- ЛОГИКА РЕЖИМОВ ---
+            if mode == "🌌 Глубокое погружение (Стык наук)":
                 context_parts = []
-                for col_name in existing_cols:
-                    col = chroma_client.get_collection(name=col_name)
+                for col_name in chroma_client.list_collections():
+                    col = chroma_client.get_collection(name=col_name.name)
                     try:
                         res = col.query(query_texts=[prompt], n_results=1)
                         if res['documents'][0]:
                             facts = res['documents'][0][0]
-                            domain_label = res['metadatas'][0][0].get('domain', col_name)
+                            domain_label = res['metadatas'][0][0].get('domain', col_name.name)
                             context_parts.append(f"[{domain_label}]: {facts}")
                     except: pass
                 context = "\n\n".join(context_parts)
@@ -158,13 +170,15 @@ if prompt := st.chat_input("Сообщение для DZIMO..."):
 2. Пиши научно, но доступно.
 3. Верни СТРОГО JSON: {{"reasoning": "Твой развернутый ответ."}}"""
 
-            # --- РЕЖИМ 2: КОНКРЕТНАЯ НАУКА (Строгий эксперт) ---
-            else:
+            elif mode == "🔬 Конкретная наука":
                 if not selected_domain:
-                    st.error("Выберите науку!")
+                    st.error("Выберите науку в выпадающем списке!")
                     st.stop()
                     
-                col = chroma_client.get_collection(name=selected_domain)
+                # Находим правильное имя коллекции по красивому названию
+                col_name = [c.name for c in chroma_client.list_collections() if c.name.replace("domain_", "").capitalize() == selected_domain][0]
+                col = chroma_client.get_collection(name=col_name)
+                
                 facts = col.query(query_texts=[prompt], n_results=3)['documents'][0]
                 context = "\n".join(facts)
                 
@@ -176,9 +190,12 @@ if prompt := st.chat_input("Сообщение для DZIMO..."):
 
 ПРАВИЛА:
 1. Отвечай ТОЛЬКО по теме ({selected_domain}).
-2. Если пользователь резко сменил тему (спросил про что-то не связанное с предыдущим вопросом), начни ответ с фразы: "Вижу, мы перешли на другую тему. Ок, теперь разбираем: ..." и отвечай на новый вопрос.
+2. Если пользователь резко сменил тему, начни ответ с фразы: "Вижу, мы перешли на другую тему. Ок, теперь разбираем: ..." и отвечай на новый вопрос.
 3. НЕ поддакивай пользователю. Если он ошибается — исправляй на основе фактов.
 4. Верни СТРОГО JSON: {{"reasoning": "Твой ответ."}}"""
+            else:
+                st.warning("Выберите режим работы.")
+                st.stop()
 
             # ВЫЗОВ LLM
             resp = client.chat.completions.create(
