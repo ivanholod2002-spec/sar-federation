@@ -3,7 +3,7 @@ import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 import streamlit as st
-import chromadb, json, uuid
+import chromadb, json, uuid, re
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
@@ -13,7 +13,6 @@ import io
 
 st.set_page_config(page_title="САР-ВСЕЛЕННАЯ", page_icon="🌌", layout="wide")
 
-# Минимальный CSS только для скрытия лишнего мусора
 st.markdown("""
 <style>
     header {visibility: hidden;}
@@ -31,14 +30,12 @@ api_base = st.secrets.get("API_BASE", os.getenv("API_BASE"))
 client = OpenAI(api_key=api_key, base_url=api_base)
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
-# Получаем список наук
 existing_cols = [c.name.replace("domain_", "").capitalize() for c in chroma_client.list_collections()]
 
-# --- БОКОВАЯ ПАНЕЛЬ (Загрузка) ---
 with st.sidebar:
     st.header("📁 База знаний")
     with st.expander("Загрузить новую науку"):
-        new_domain_name = st.text_input("Название науки (напр: Музыка):")
+        new_domain_name = st.text_input("Название науки:")
         uploaded_file = st.file_uploader("TXT или PDF", type=["txt", "pdf"])
         if uploaded_file and new_domain_name and st.button("Проглотить"):
             file_extension = uploaded_file.name.split('.')[-1].lower()
@@ -55,7 +52,6 @@ with st.sidebar:
 st.title("🌌 САР-ВСЕЛЕННАЯ: Синтез Знаний")
 st.caption("Neuro-Symbolic Engine")
 
-# --- ЧАТ ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -63,7 +59,6 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         if msg["role"] == "assistant":
             st.markdown(msg.get("reasoning", ""))
-            # Ряд иконок под ответом
             st.markdown("""
             <div class="msg-icons">
                 <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
@@ -76,7 +71,6 @@ for msg in st.session_state.messages:
         else:
             st.markdown(msg["content"])
 
-# --- ПАНЕЛЬ ВЫБОРА РЕЖИМА И НАУКИ (Перед вводом) ---
 col1, col2 = st.columns([1, 2])
 
 with col1:
@@ -90,7 +84,6 @@ with col2:
         else:
             st.warning("⚠️ В базе нет наук. Загрузите файлы в боковой панели.")
 
-# --- ВВОД СООБЩЕНИЯ ---
 if prompt := st.chat_input("Задайте вопрос..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
@@ -103,7 +96,6 @@ if prompt := st.chat_input("Задайте вопрос..."):
                 for m in st.session_state.messages[-3:-1]:
                     history_context += f"{m['role'].upper()}: {m.get('content') or m.get('reasoning')}\n"
 
-            # ЛОГИКА РЕЖИМОВ
             if mode == "🌌 Стык наук":
                 context_parts = []
                 for col_name in chroma_client.list_collections():
@@ -128,12 +120,31 @@ if prompt := st.chat_input("Задайте вопрос..."):
                 
                 llm_prompt = f"Ты DZIMO. Режим: Наука ({selected_domain}).\nИСТОРИЯ: {history_context}\nКОНТЕКСТ: {context}\nВОПРОС: {prompt}\nЕсли пользователь резко сменил тему, начни ответ с фразы: 'Вижу, мы перешли на другую тему. Ок...'. Верни СТРОГО JSON: {{\"reasoning\": \"текст\"}}"
 
-            resp = client.chat.completions.create(model="deepseek-chat", messages=[{"role": "user", "content": llm_prompt}], response_format={"type": "json_object"})
-            reasoning_text = json.loads(resp.choices[0].message.content).get("reasoning", "Нет ответа.")
+            # ВЫЗОВ LLM
+            resp = client.chat.completions.create(
+                model="deepseek-chat", 
+                messages=[{"role": "user", "content": llm_prompt}], 
+                response_format={"type": "json_object"},
+                max_tokens=8192 # Увеличиваем лимит до максимума
+            )
+            
+            raw_content = resp.choices[0].message.content
+            
+            # СПАСАТЕЛЬНЫЙ КРУГ ОТ JSON ОШИБКИ
+            try:
+                data = json.loads(raw_content)
+                reasoning_text = data.get("reasoning", "Нет ответа.")
+            except json.JSONDecodeError:
+                st.warning("⚠️ Модель написала слишком длинный текст, и JSON сломался. Но текст сохранен ниже!")
+                # Пытаемся вытащить текст через регулярку
+                match = re.search(r'"reasoning":\s*"(.*)', raw_content, re.DOTALL)
+                if match:
+                    reasoning_text = match.group(1).replace('\\n', '\n').rstrip('"}')
+                else:
+                    reasoning_text = raw_content
 
             st.markdown(reasoning_text)
             
-            # Иконки под новым ответом
             st.markdown("""
             <div class="msg-icons">
                 <svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
